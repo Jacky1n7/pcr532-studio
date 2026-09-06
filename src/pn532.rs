@@ -524,6 +524,32 @@ pub fn capacity(card: &Card) -> Result<usize> {
         _ => bail!("不是支持的 Classic 兼容卡"),
     }
 }
+/// Best-effort ISO14443A card-type identification from ATQA/SAK.
+/// Read-only classification; SAK alone does not prove a precise chip model,
+/// so ambiguous cases are reported as compatible families, not exact parts.
+pub fn classify(card: &Card) -> String {
+    let uid_len = card.uid.len() / 2;
+    let base = match card.sak.as_str() {
+        "00" => "NTAG / MIFARE Ultralight 兼容（SAK 00）",
+        "09" => "MIFARE Classic Mini / S20 兼容（约 320 B）",
+        "08" => "MIFARE Classic 1K 兼容",
+        "18" => "MIFARE Classic 4K 兼容",
+        "10" | "11" => "MIFARE Plus 2K/4K 兼容或 Classic 2K 布局",
+        "20" => "ISO14443-4 (APDU) 卡，可能为 DESFire / Plus SL3 / CPU 卡",
+        "28" => "SmartMX / JCOP 类 CPU 卡（ISO14443-4）",
+        _ => "未知或未收录的 SAK",
+    };
+    let uid_note = match uid_len {
+        4 => "，4 字节 UID（可能为固定或随机）",
+        7 => "，7 字节 UID",
+        10 => "，10 字节 UID",
+        _ => "",
+    };
+    format!(
+        "{base}{uid_note}（依据 ATQA {} / SAK {}，只读判断，非精确芯片型号）",
+        card.atqa, card.sak
+    )
+}
 pub fn validate_write(
     doc: &Document,
     indices: &[usize],
@@ -580,6 +606,23 @@ mod tests {
         let d = [1, 1, 0, 4, 8, 4, 1, 2, 3, 4];
         assert_eq!(parse_target(&d).unwrap().uid, "01020304");
         assert!(parse_target(&d[..8]).is_err());
+    }
+    #[test]
+    fn classify_families() {
+        let card = |atqa: &str, sak: &str, uid: &str| Card {
+            uid: uid.into(),
+            atqa: atqa.into(),
+            sak: sak.into(),
+        };
+        assert!(classify(&card("0004", "08", "01020304")).contains("1K"));
+        assert!(classify(&card("0002", "18", "01020304")).contains("4K"));
+        assert!(classify(&card("0044", "00", "04010203040506")).contains("NTAG"));
+        assert!(classify(&card("0344", "20", "01020304")).contains("APDU"));
+        // Unknown SAK must not fabricate a precise part.
+        let unknown = classify(&card("0000", "FF", "01020304"));
+        assert!(unknown.contains("未知") && unknown.contains("非精确芯片型号"));
+        // 7-byte UID note is surfaced.
+        assert!(classify(&card("0044", "00", "04010203040506")).contains("7 字节"));
     }
     #[test]
     fn preflight() {

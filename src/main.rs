@@ -64,7 +64,9 @@ fn main() -> Result<()> {
                 })?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else if op == "scan" {
-                println!("{}", serde_json::to_string_pretty(&reader.select(None)?)?);
+                let card = reader.select(None)?;
+                eprintln!("卡型：{}", pn532::classify(&card));
+                println!("{}", serde_json::to_string_pretty(&card)?);
             } else {
                 let output = args.get(3).context("请指定输出文件")?;
                 let keys = document::parse_keys(

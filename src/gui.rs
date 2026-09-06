@@ -893,6 +893,8 @@ impl eframe::App for App {
                     if let Some(card) = &self.card {
                         ui.label(format!("UID {}", card.uid));
                         ui.label(format!("ATQA {} / SAK {}", card.atqa, card.sak));
+                        ui.weak(crate::pn532::classify(card))
+                            .on_hover_text("依据 ATQA/SAK 的只读判断，非精确芯片型号");
                     }
                 });
         }
