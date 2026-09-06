@@ -353,10 +353,26 @@ impl App {
     /// HEX loads it into the right-hand editor.
     fn block_table(&mut self, ui: &mut egui::Ui) {
         if self.document.blocks.iter().all(Option::is_none) {
-            ui.add_space(40.);
+            ui.add_space(60.);
             ui.vertical_centered(|ui| {
-                ui.weak("尚无卡片数据。");
-                ui.weak("连接设备并识卡后，用左侧「IC 卡操作」读取，或打开已有备份。");
+                egui::Frame::new()
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(46, 60, 76)))
+                    .corner_radius(10.)
+                    .inner_margin(egui::Margin::symmetric(34, 28))
+                    .show(ui, |ui| {
+                        ui.set_max_width(420.);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new("尚无卡片数据")
+                                    .size(15.)
+                                    .color(Color32::from_rgb(150, 165, 180)),
+                            );
+                            ui.add_space(8.);
+                            ui.weak("① 连接设备并识卡");
+                            ui.weak("② 用左侧「IC 卡操作」读取");
+                            ui.weak("或从右侧「导入备份」打开已有数据");
+                        });
+                    });
             });
             return;
         }
@@ -953,8 +969,14 @@ impl App {
             .default_open(true)
             .show(ui, |ui| {
                 let full = ui.available_width();
+                // Primary read path: accent-filled so it outranks the secondary
+                // Fudan buttons below.
                 if ui
-                    .add_sized([full, 30.], egui::Button::new("字典读取"))
+                    .add_sized(
+                        [full, 32.],
+                        egui::Button::new(RichText::new("字典读取").strong())
+                            .fill(Color32::from_rgb(27, 99, 92)),
+                    )
                     .on_hover_text("用密钥字典认证并读取全部区块")
                     .clicked()
                 {
@@ -971,19 +993,27 @@ impl App {
                         });
                 });
                 ui.add_space(6.);
-                ui.weak("Fudan 固定加密随机数卡");
-                if ui
-                    .add_sized([full, 28.], egui::Button::new("Fudan 本地完整读取"))
-                    .clicked()
-                {
-                    self.start(self.job(Operation::FudanRead));
-                }
-                if ui
-                    .add_sized([full, 28.], egui::Button::new("Fudan 恢复密钥并读取"))
-                    .clicked()
-                {
-                    self.start(self.job(Operation::FudanRecover));
-                }
+                ui.weak("Fudan 固定加密随机数卡（次要路径）");
+                // Secondary paths: slightly inset and default-weight to read as
+                // subordinate to the primary dictionary read above.
+                ui.horizontal(|ui| {
+                    ui.add_space(10.);
+                    ui.vertical(|ui| {
+                        let w = ui.available_width();
+                        if ui
+                            .add_sized([w, 27.], egui::Button::new("Fudan 本地完整读取"))
+                            .clicked()
+                        {
+                            self.start(self.job(Operation::FudanRead));
+                        }
+                        if ui
+                            .add_sized([w, 27.], egui::Button::new("Fudan 恢复密钥并读取"))
+                            .clicked()
+                        {
+                            self.start(self.job(Operation::FudanRecover));
+                        }
+                    });
+                });
                 ui.weak("恢复出的普通密钥须通过实卡 A/B 认证才写入备份。");
             });
     }
