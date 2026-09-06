@@ -47,7 +47,13 @@ fn main() -> Result<()> {
 </dict></plist>"#
     );
     std::fs::write(app.join("Contents/Info.plist"), plist)?;
-    for file in ["README.md", "LICENSE", "THIRD_PARTY.md", "THIRD_PARTY.html"] {
+    for file in [
+        "README.md",
+        "LICENSE",
+        "LICENSE-MIT",
+        "THIRD_PARTY.md",
+        "THIRD_PARTY.html",
+    ] {
         std::fs::copy(file, resources.join(file))?;
     }
     let mut sign = Command::new("codesign");

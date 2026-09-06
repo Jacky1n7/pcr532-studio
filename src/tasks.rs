@@ -12,6 +12,19 @@ use std::{
 
 #[derive(Clone)]
 pub enum Operation {
+    FudanRead,
+    FudanRecover,
+    Diagnose {
+        block: usize,
+        kind: String,
+    },
+    Nested {
+        source: usize,
+        known: String,
+        target: usize,
+        kind: String,
+        keys: Vec<String>,
+    },
     VendorRead {
         hid: bool,
     },
@@ -79,6 +92,76 @@ pub fn run(job: Job, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Result<()> 
         let _ = tx.send(Event::Log(s));
     };
     match job.operation {
+        Operation::FudanRead => {
+            let doc = crate::recovery::fudan_read(&mut reader, &mut progress)?;
+            let path = archive(&doc)?;
+            progress(format!(
+                "读取 {}/{} 块，已归档 {}。普通 A/B 密钥仍需单独认证或恢复。",
+                doc.known(),
+                doc.blocks.len(),
+                path.display()
+            ));
+            let _ = tx.send(Event::Document(doc));
+        }
+        Operation::FudanRecover => {
+            let doc = crate::recovery::fudan_recover(&mut reader, &mut progress)?;
+            let count: usize = doc.keys.values().map(|k| k.len()).sum();
+            let path = archive(&doc)?;
+            progress(format!(
+                "读取 {}/{} 块；已验证 {count}/32 个普通密钥。归档 {}",
+                doc.known(),
+                doc.blocks.len(),
+                path.display()
+            ));
+            let _ = tx.send(Event::Document(doc));
+        }
+        Operation::Diagnose { block, kind } => {
+            let report = crate::recovery::diagnose(&mut reader, block, &kind, 8, &mut progress)?;
+            progress(format!(
+                "随机数 {} 种；弱 PRNG 样本 {}/{}。{}",
+                report.distinct,
+                report.weak_prng_samples,
+                report.nonces.len(),
+                report.conclusion
+            ));
+            let path = data_dir()
+                .join("diagnostics")
+                .join(format!("nonce-{}.json", crate::document::unique_id()?));
+            std::fs::create_dir_all(data_dir().join("diagnostics"))?;
+            crate::document::atomic_write(&path, &serde_json::to_vec_pretty(&report)?)?;
+            progress(format!("本地诊断报告：{}", path.display()));
+            let _ = tx.send(Event::Card(report.card));
+        }
+        Operation::Nested {
+            source,
+            known,
+            target,
+            kind,
+            mut keys,
+        } => {
+            let recovered =
+                crate::recovery::nested(&mut reader, source, &known, target, &kind, &mut progress)?;
+            if let Some(key) = recovered {
+                keys.push(key);
+                keys.push(known);
+                keys.sort();
+                keys.dedup();
+                let blocks = crate::pn532::capacity(&reader.select(None)?)?;
+                let doc = reader.read_classic(&keys, blocks, &mut progress)?;
+                let path = archive(&doc)?;
+                progress(format!(
+                    "恢复后读取 {}/{} 块，归档 {}",
+                    doc.known(),
+                    doc.blocks.len(),
+                    path.display()
+                ));
+                let _ = tx.send(Event::Document(doc));
+            } else {
+                anyhow::bail!(
+                    "本次普通 nested 未恢复密钥；不能据此断言卡片不可恢复。hardnested / DarkSide 尚未接入。"
+                );
+            }
+        }
         Operation::VendorRead { .. } => unreachable!(),
         Operation::Scan => {
             progress(reader.firmware()?);

@@ -1,10 +1,10 @@
 [package]
 name = "pcr532-studio"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 edition = "2024"
 rust-version = "1.92"
 description = "Rust desktop utility for authorized PCR532 RFID card testing"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/Jacky1n7/pcr532-studio"
 
 [dependencies]
