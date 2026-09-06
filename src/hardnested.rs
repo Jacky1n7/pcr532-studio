@@ -90,6 +90,73 @@ pub fn sum_property(state: &Crypto1) -> u16 {
     )
 }
 
+/// Total number of distinct nonce first-byte values (`N` in the hypergeometric
+/// model): each Crypto1 nonce first byte is one of 256 values.
+pub const NUM_FIRST_BYTES: u16 = 256;
+
+/// Hypergeometric probability `P(T = k | S = sums[i_k])`.
+///
+/// Models drawing `n` nonce first bytes without replacement from a population
+/// of [`NUM_FIRST_BYTES`] in which `K = SUMS[i_k]` have the odd-parity bit set,
+/// observing `k` of them. Port of `p_hypergeometric`, using logarithms in the
+/// boundary cases to avoid factorial overflow and the published recursion
+/// elsewhere. All arithmetic is done in `i64` so the `n - k` / `N - K - n + k`
+/// terms never underflow.
+pub fn p_hypergeometric(i_k: usize, n: u16, k: u16) -> f64 {
+    let n_total: i64 = NUM_FIRST_BYTES as i64;
+    let big_k: i64 = SUMS[i_k] as i64;
+    let n = n as i64;
+    let k = k as i64;
+    if n - k > n_total - big_k || k > big_k {
+        return 0.0;
+    }
+    if k == 0 {
+        let mut log_result = 0.0;
+        for i in (n_total - big_k - n + 1)..=(n_total - big_k) {
+            log_result += (i as f64).ln();
+        }
+        for i in (n_total - n + 1)..=n_total {
+            log_result -= (i as f64).ln();
+        }
+        log_result.exp()
+    } else if n - k == n_total - big_k {
+        // Special case: the recursion below would divide by zero here.
+        let mut log_result = 0.0;
+        for i in (k + 1)..=n {
+            log_result += (i as f64).ln();
+        }
+        for i in (big_k + 1)..=n_total {
+            log_result -= (i as f64).ln();
+        }
+        log_result.exp()
+    } else {
+        p_hypergeometric(i_k, n as u16, (k - 1) as u16)
+            * (big_k - k + 1) as f64
+            * (n - k + 1) as f64
+            / (k as f64 * (n_total - big_k - n + k) as f64)
+    }
+}
+
+/// Bayesian posterior `P(S = SUMS[i_k] | observed k of n)`.
+///
+/// `prior[i]` is `P(S = SUMS[i])` — the fraction of Crypto1 states whose sum
+/// property is `SUMS[i]`. Port of `sum_probability`. Returns `0.0` when the
+/// observation is impossible for this hypothesis, and `0.0` if the evidence has
+/// zero total probability under the prior.
+pub fn sum_probability(i_k: usize, n: u16, k: u16, prior: &[f64; SUMS.len()]) -> f64 {
+    if k > SUMS[i_k] {
+        return 0.0;
+    }
+    let likelihood = p_hypergeometric(i_k, n, k);
+    let evidence: f64 = (0..SUMS.len())
+        .map(|i| prior[i] * p_hypergeometric(i, n, k))
+        .sum();
+    if evidence == 0.0 {
+        return 0.0;
+    }
+    likelihood * prior[i_k] / evidence
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +210,68 @@ mod tests {
 
     /// The sum property of a concrete loaded key is a legal sum value, and the
     /// convenience wrapper agrees with the explicit partial/combine composition.
+    /// For a fixed hypothesis and sample size, the hypergeometric distribution
+    /// over all achievable `k` sums to 1.
+    #[test]
+    fn hypergeometric_is_a_distribution() {
+        for &n in &[1u16, 5, 16, 32] {
+            for (i_k, &sum) in SUMS.iter().enumerate() {
+                let total: f64 = (0..=n).map(|k| p_hypergeometric(i_k, n, k)).sum();
+                // k above SUMS[i_k] or beyond the population contributes 0.
+                assert!((total - 1.0).abs() < 1e-6, "sum={sum} n={n} total={total}");
+            }
+        }
+    }
+
+    /// Probabilities are always in [0, 1]; impossible observations give exactly 0.
+    #[test]
+    fn hypergeometric_is_bounded() {
+        for &n in &[1u16, 8, 32] {
+            for (i_k, &sum) in SUMS.iter().enumerate() {
+                for k in 0..=n {
+                    let p = p_hypergeometric(i_k, n, k);
+                    // Allow tiny floating-point drift from the recursion above 1.0.
+                    assert!((-1e-9..=1.0 + 1e-9).contains(&p), "p={p} out of range");
+                }
+                // Observing more successes than the hypothesis allows is impossible.
+                if sum < n {
+                    assert_eq!(p_hypergeometric(i_k, n, n), 0.0);
+                }
+            }
+        }
+    }
+
+    /// With a uniform prior the posterior over hypotheses is a valid
+    /// distribution, and evidence favouring one sum raises its posterior above
+    /// the uniform baseline.
+    #[test]
+    fn bayesian_posterior_normalises_and_updates() {
+        let uniform = [1.0 / SUMS.len() as f64; SUMS.len()];
+        let (n, k) = (16u16, 8u16);
+        let posterior: Vec<f64> = (0..SUMS.len())
+            .map(|i| sum_probability(i, n, k, &uniform))
+            .collect();
+        let total: f64 = posterior.iter().sum();
+        assert!((total - 1.0).abs() < 1e-6, "posterior total={total}");
+        assert!(posterior.iter().all(|&p| (0.0..=1.0).contains(&p)));
+        // The middle sum value 128 explains "half the bytes set" best.
+        let idx_128 = sum_index(128).unwrap();
+        assert!(
+            posterior[idx_128] > uniform[idx_128],
+            "evidence should raise the most consistent hypothesis"
+        );
+    }
+
+    /// A prior that is certain of one hypothesis keeps the posterior certain
+    /// (the observation cannot contradict a degenerate prior here).
+    #[test]
+    fn degenerate_prior_is_preserved() {
+        let idx = sum_index(128).unwrap();
+        let mut prior = [0.0; SUMS.len()];
+        prior[idx] = 1.0;
+        assert!((sum_probability(idx, 16, 8, &prior) - 1.0).abs() < 1e-9);
+    }
+
     #[test]
     fn full_sum_property_of_states_is_legal() {
         for key in [0u64, 0xffffffffffff, 0xa0a1a2a3a4a5, 0x123456789abc] {
