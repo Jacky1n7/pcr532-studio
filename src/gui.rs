@@ -15,19 +15,8 @@ use std::{
     thread::JoinHandle,
 };
 
-const PAGES: [&str; 7] = [
-    "工作台",
-    "IC 数据",
-    "密钥与恢复",
-    "NTAG / NDEF",
-    "工具",
-    "本地记录",
-    "迁移状态",
-];
 pub struct App {
     smoke_requested: bool,
-    page: usize,
-    sidebar: bool,
     ports: Vec<String>,
     port: String,
     baud: u32,
@@ -71,9 +60,28 @@ impl App {
         let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
         style.spacing.item_spacing = egui::vec2(10., 9.);
         style.spacing.button_padding = egui::vec2(14., 8.);
-        style.visuals.panel_fill = Color32::from_rgb(16, 23, 33);
-        style.visuals.selection.bg_fill = Color32::from_rgb(32, 108, 106);
-        style.visuals.override_text_color = Some(Color32::from_rgb(229, 235, 239));
+        // Layered dark surfaces: content area (central) is the base; side panels
+        // sit on a slightly cooler/darker neutral so operations read as chrome,
+        // and interactive widgets/text fields use a distinct raised fill.
+        let content = Color32::from_rgb(18, 25, 35);
+        let chrome = Color32::from_rgb(14, 20, 29);
+        let field = Color32::from_rgb(24, 33, 45);
+        let accent = Color32::from_rgb(45, 138, 128);
+        style.visuals.panel_fill = content;
+        style.visuals.window_fill = content;
+        style.visuals.extreme_bg_color = field;
+        style.visuals.faint_bg_color = chrome;
+        style.visuals.selection.bg_fill = accent;
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, Color32::from_rgb(120, 224, 206));
+        style.visuals.override_text_color = Some(Color32::from_rgb(226, 233, 238));
+        style.visuals.widgets.noninteractive.bg_fill = chrome;
+        style.visuals.widgets.inactive.bg_fill = field;
+        style.visuals.widgets.inactive.weak_bg_fill = field;
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(32, 44, 59);
+        style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(32, 44, 59);
+        style.visuals.widgets.active.bg_fill = accent;
+        style.visuals.widgets.active.weak_bg_fill = accent;
+        style.visuals.window_stroke = egui::Stroke::new(1.0, Color32::from_rgb(38, 50, 64));
         style.spacing.interact_size.y = 30.;
         style
             .text_styles
@@ -111,8 +119,6 @@ impl App {
         ctx.set_fonts(fonts);
         let mut app = Self {
             smoke_requested: false,
-            page: 0,
-            sidebar: true,
             ports: vec![],
             port: String::new(),
             baud: 115200,
@@ -253,7 +259,6 @@ impl App {
                     self.document = d;
                     self.selected.clear();
                     self.capacity = self.document.blocks.len();
-                    self.page = 1;
                     self.refresh_archive();
                 }
                 Event::Ntag(c, data) => {
@@ -344,51 +349,26 @@ impl App {
             self.error(e);
         }
     }
-    fn memory(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("capacity")
-                .selected_text(format!("{} 块", self.capacity))
-                .show_ui(ui, |ui| {
-                    for n in [20, 64, 128, 256] {
-                        ui.selectable_value(&mut self.capacity, n, format!("{n} 块"));
-                    }
-                });
-            if ui.button("读取卡片").clicked() {
-                self.read();
-            }
-            if ui.button("导入").clicked() {
-                self.import();
-            }
-            if ui.button("导出").clicked() {
-                self.export();
-            }
-            if ui.button("新建空白文档").clicked()
-                && rfd::MessageDialog::new()
-                    .set_title("替换编辑区")
-                    .set_description("未保存的修改会丢失；仅生成数据，不向卡片写入。")
-                    .set_buttons(rfd::MessageButtons::OkCancel)
-                    .show()
-                    == rfd::MessageDialogResult::Ok
-            {
-                self.document = Document::blank(self.capacity).unwrap();
-                self.selected.clear();
-            }
-        });
-        ui.label(format!(
-            "已知 {}/{} 块 · 选中 {} 块",
-            self.document.known(),
-            self.document.blocks.len(),
-            self.selected.len()
-        ));
+    /// Center panel: the read-back block table ("数据表 A"). Clicking a row's
+    /// HEX loads it into the right-hand editor.
+    fn block_table(&mut self, ui: &mut egui::Ui) {
+        if self.document.blocks.iter().all(Option::is_none) {
+            ui.add_space(40.);
+            ui.vertical_centered(|ui| {
+                ui.weak("尚无卡片数据。");
+                ui.weak("连接设备并识卡后，用左侧「IC 卡操作」读取，或打开已有备份。");
+            });
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_salt("memory")
-            .max_height(330.)
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Grid::new("blocks")
                     .striped(true)
-                    .min_col_width(45.)
+                    .min_col_width(44.)
                     .show(ui, |ui| {
-                        for title in ["选择", "扇区", "块", "HEX · 点击后在下方编辑", "状态"]
+                        for title in ["选择", "扇区", "块", "HEX · 点击载入右侧编辑", "状态"]
                         {
                             ui.strong(title);
                         }
@@ -432,32 +412,6 @@ impl App {
                         }
                     });
             });
-        ui.horizontal(|ui| {
-            ui.label(format!("编辑块 {}", self.edit_block));
-            ui.add(
-                TextEdit::singleline(&mut self.edit_hex)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(400.),
-            );
-            if ui.button("应用编辑").clicked()
-                && let Err(e) = self.document.set_block(self.edit_block, &self.edit_hex)
-            {
-                self.error(e);
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.trailers, "写入密钥 / 访问位");
-            if ui.button("写入选中块").clicked()
-                && let Err(e) = self.write(false)
-            {
-                self.error(e);
-            }
-            if ui.button("写入全部用户块").clicked()
-                && let Err(e) = self.write(true)
-            {
-                self.error(e);
-            }
-        });
     }
     fn keys(&mut self, ui: &mut egui::Ui) {
         ui.label("每行一个 12 位 HEX 密钥。读取和写入认证使用这份字典。");
@@ -743,7 +697,6 @@ impl App {
                             self.selected.clear();
                             self.edit_block = 0;
                             self.edit_hex.clear();
-                            self.page = 1;
                         }
                     }
                     Err(e) => self.error(e),
@@ -802,6 +755,330 @@ impl App {
                 .desired_width(f32::INFINITY),
         );
     }
+
+    /// Top bar: title + serial device connect row (⌘R identifies the card).
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("header").show(ui, |ui| {
+            ui.add_space(8.);
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(
+                    RichText::new("PCR532 Studio")
+                        .size(18.)
+                        .color(Color32::from_rgb(88, 205, 186)),
+                );
+                ui.separator();
+                ui.add_enabled_ui(!self.busy(), |ui| {
+                    egui::ComboBox::from_id_salt("port")
+                        .selected_text(if self.port.is_empty() {
+                            "选择串口"
+                        } else {
+                            &self.port
+                        })
+                        .width(220.)
+                        .show_ui(ui, |ui| {
+                            for p in &self.ports {
+                                ui.selectable_value(&mut self.port, p.clone(), p);
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("baud")
+                        .selected_text(self.baud.to_string())
+                        .show_ui(ui, |ui| {
+                            for b in [9600, 19200, 38400, 57600, 115200, 230400] {
+                                ui.selectable_value(&mut self.baud, b, b.to_string());
+                            }
+                        });
+                    if ui.button("刷新").clicked() {
+                        self.refresh_ports();
+                    }
+                    if ui
+                        .add(egui::Button::new("连接 / 识卡").fill(Color32::from_rgb(27, 99, 92)))
+                        .on_hover_text("⌘R · 识别卡型、UID 与 Gen1a 后门")
+                        .clicked()
+                    {
+                        self.start(self.job(Operation::Scan));
+                    }
+                });
+            });
+            ui.add_space(6.);
+        });
+    }
+
+    /// Bottom status bar: state · current card UID · device · version.
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("status").show(ui, |ui| {
+            ui.add_space(3.);
+            ui.horizontal(|ui| {
+                if self.busy() {
+                    ui.spinner();
+                    ui.strong(&self.status);
+                } else {
+                    ui.weak("空闲");
+                }
+                ui.separator();
+                match &self.card {
+                    Some(c) => ui.monospace(format!("当前卡号 {}", c.uid)),
+                    None => ui.weak("当前卡号 —"),
+                };
+                ui.separator();
+                ui.weak(if self.port.is_empty() {
+                    "设备 未连接".to_owned()
+                } else {
+                    format!("设备 {}", self.port)
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+                });
+            });
+            ui.add_space(3.);
+        });
+    }
+
+    /// Bottom log panel with spinner, stop, and save-log controls.
+    fn log_panel(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("logs")
+            .resizable(true)
+            .default_size(150.)
+            .show(ui, |ui| {
+                ui.set_min_height(110.);
+                ui.add_space(4.);
+                ui.horizontal(|ui| {
+                    ui.strong("日志");
+                    if ui
+                        .add_enabled(self.busy(), egui::Button::new("停止任务"))
+                        .clicked()
+                    {
+                        self.cancel.store(true, Ordering::Relaxed);
+                        self.log("已请求停止，正在结束当前任务。".into());
+                    }
+                    if ui.button("清除日志").clicked() {
+                        self.logs.clear();
+                    }
+                    if ui.button("保存日志").clicked()
+                        && let Some(p) = rfd::FileDialog::new()
+                            .set_file_name("pcr532.log")
+                            .save_file()
+                        && let Err(e) = document::atomic_write(&p, self.logs.join("\n").as_bytes())
+                    {
+                        self.error(e);
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.logs.is_empty() {
+                            ui.weak("任务记录会显示在这里。所有卡片数据仅保存在本机。");
+                        }
+                        for line in &self.logs {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+    }
+
+    /// Frame for side panels: the cooler "chrome" surface with inner padding,
+    /// so operation/editor panels read as distinct from the central data area.
+    fn chrome_frame(ui: &egui::Ui) -> egui::Frame {
+        egui::Frame::side_top_panel(ui.style())
+            .fill(Color32::from_rgb(14, 20, 29))
+            .inner_margin(egui::Margin::symmetric(14, 10))
+    }
+
+    /// Left operations panel: card info + grouped, collapsible actions.
+    fn left_operations(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::left("ops")
+            .resizable(true)
+            .default_size(310.)
+            .size_range(270.0..=440.)
+            .frame(Self::chrome_frame(ui))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(8.);
+                        self.card_info(ui);
+                        ui.add_space(6.);
+                        ui.add_enabled_ui(!self.busy(), |ui| {
+                            self.ic_operations(ui);
+                            ui.add_space(4.);
+                            egui::CollapsingHeader::new("密钥字典")
+                                .default_open(true)
+                                .show(ui, |ui| self.keys(ui));
+                            egui::CollapsingHeader::new("NTAG / NDEF").show(ui, |ui| self.ntag(ui));
+                            egui::CollapsingHeader::new("工具").show(ui, |ui| self.tools(ui));
+                            egui::CollapsingHeader::new("本地备份")
+                                .show(ui, |ui| self.archive_list(ui));
+                        });
+                        ui.add_space(8.);
+                    });
+            });
+    }
+
+    /// Card-info group shown at the top of the left panel.
+    fn card_info(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.strong("卡片信息");
+            });
+            ui.separator();
+            if let Some(card) = &self.card {
+                ui.monospace(format!("UID   {}", card.uid));
+                ui.label(format!("ATQA {}   SAK {}", card.atqa, card.sak));
+                ui.weak(crate::pn532::classify(card))
+                    .on_hover_text("依据 ATQA/SAK 的只读判断，非精确芯片型号");
+                match self.gen1a {
+                    Some(true) => {
+                        ui.colored_label(Color32::from_rgb(90, 209, 187), "Gen1a 后门：是")
+                            .on_hover_text(
+                                "响应 40/43 后门，可能支持直接写 0 块 UID（只读探测，未写卡）",
+                            );
+                    }
+                    Some(false) => {
+                        ui.weak("Gen1a 后门：否")
+                            .on_hover_text("未响应后门，普通卡或非 Gen1a 魔术卡（只读探测）");
+                    }
+                    None => {}
+                }
+            } else {
+                ui.weak("尚未识别卡片。");
+                ui.weak("将卡放到 IC 感应区，点击上方「连接 / 识卡」。");
+            }
+        });
+    }
+
+    /// IC-card read/recovery actions. Only implemented capabilities appear here.
+    fn ic_operations(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("IC 卡操作")
+            .default_open(true)
+            .show(ui, |ui| {
+                let full = ui.available_width();
+                if ui
+                    .add_sized([full, 30.], egui::Button::new("字典读取"))
+                    .on_hover_text("用密钥字典认证并读取全部区块")
+                    .clicked()
+                {
+                    self.read();
+                }
+                ui.horizontal(|ui| {
+                    ui.label("容量");
+                    egui::ComboBox::from_id_salt("capacity")
+                        .selected_text(format!("{} 块", self.capacity))
+                        .show_ui(ui, |ui| {
+                            for n in [20, 64, 128, 256] {
+                                ui.selectable_value(&mut self.capacity, n, format!("{n} 块"));
+                            }
+                        });
+                });
+                ui.add_space(6.);
+                ui.weak("Fudan 固定加密随机数卡");
+                if ui
+                    .add_sized([full, 28.], egui::Button::new("Fudan 本地完整读取"))
+                    .clicked()
+                {
+                    self.start(self.job(Operation::FudanRead));
+                }
+                if ui
+                    .add_sized([full, 28.], egui::Button::new("Fudan 恢复密钥并读取"))
+                    .clicked()
+                {
+                    self.start(self.job(Operation::FudanRecover));
+                }
+                ui.weak("恢复出的普通密钥须通过实卡 A/B 认证才写入备份。");
+            });
+    }
+
+    /// Local backup file list (moved from the old records page).
+    fn archive_list(&mut self, ui: &mut egui::Ui) {
+        if ui.button("刷新本地备份").clicked() {
+            self.refresh_archive();
+        }
+        let mut chosen = None;
+        for p in &self.archive {
+            if ui
+                .button(p.file_name().unwrap_or_default().to_string_lossy())
+                .clicked()
+            {
+                chosen = Some(p.clone());
+            }
+        }
+        if let Some(p) = chosen {
+            match Document::load(&p) {
+                Ok(doc) => {
+                    self.document = doc;
+                    self.capacity = self.document.blocks.len();
+                    self.edit_block = 0;
+                    self.edit_hex.clear();
+                    self.selected.clear();
+                }
+                Err(e) => self.error(e),
+            }
+        }
+    }
+
+    /// Right panel ("数据表 B"): block editor + write controls + I/O.
+    fn right_editor(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::right("editor")
+            .resizable(true)
+            .default_size(330.)
+            .size_range(290.0..=470.)
+            .frame(Self::chrome_frame(ui))
+            .show(ui, |ui| {
+                ui.add_space(10.);
+                ui.strong(RichText::new("数据表 B · 写卡 / 编辑").size(15.));
+                ui.add_space(8.);
+                ui.add_enabled_ui(!self.busy(), |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("导入备份…").on_hover_text("⌘O").clicked() {
+                            self.import();
+                        }
+                        if ui.button("导出…").on_hover_text("⌘S").clicked() {
+                            self.export();
+                        }
+                        if ui.button("新建空白").clicked()
+                            && rfd::MessageDialog::new()
+                                .set_title("替换编辑区")
+                                .set_description("未保存的修改会丢失；仅生成数据，不向卡片写入。")
+                                .set_buttons(rfd::MessageButtons::OkCancel)
+                                .show()
+                                == rfd::MessageDialogResult::Ok
+                        {
+                            self.document = Document::blank(self.capacity).unwrap();
+                            self.selected.clear();
+                        }
+                    });
+                    ui.separator();
+                    ui.label(format!("编辑块 {}", self.edit_block));
+                    ui.add(
+                        TextEdit::singleline(&mut self.edit_hex)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if ui.button("应用编辑到备份").clicked()
+                        && let Err(e) = self.document.set_block(self.edit_block, &self.edit_hex)
+                    {
+                        self.error(e);
+                    }
+                    ui.add_space(10.);
+                    ui.separator();
+                    ui.strong("写入目标卡");
+                    ui.checkbox(&mut self.trailers, "写入密钥 / 访问位");
+                    ui.horizontal(|ui| {
+                        if ui.button("写入选中块").clicked()
+                            && let Err(e) = self.write(false)
+                        {
+                            self.error(e);
+                        }
+                        if ui.button("写入全部用户块").clicked()
+                            && let Err(e) = self.write(true)
+                        {
+                            self.error(e);
+                        }
+                    });
+                    ui.weak("写入会覆盖目标卡，逐块回读校验；需先识别目标卡并确认。");
+                });
+            });
+    }
 }
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -823,207 +1100,27 @@ impl eframe::App for App {
                 self.start(self.job(Operation::Scan));
             }
         }
-        egui::Panel::top("header").show(ui, |ui| {
-            ui.add_space(8.);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .button("侧栏")
-                    .on_hover_text("显示或隐藏导航侧栏")
-                    .clicked()
-                {
-                    self.sidebar = !self.sidebar;
-                }
-                ui.strong(
-                    RichText::new("PCR532 Studio")
-                        .size(17.)
-                        .color(Color32::from_rgb(88, 205, 186)),
-                );
-                ui.separator();
-                ui.add_enabled_ui(!self.busy(), |ui| {
-                    egui::ComboBox::from_id_salt("port")
-                        .selected_text(if self.port.is_empty() {
-                            "选择串口"
-                        } else {
-                            &self.port
-                        })
-                        .width(230.)
-                        .show_ui(ui, |ui| {
-                            for p in &self.ports {
-                                ui.selectable_value(&mut self.port, p.clone(), p);
-                            }
-                        });
-                    egui::ComboBox::from_id_salt("baud")
-                        .selected_text(self.baud.to_string())
-                        .show_ui(ui, |ui| {
-                            for b in [9600, 19200, 38400, 57600, 115200, 230400] {
-                                ui.selectable_value(&mut self.baud, b, b.to_string());
-                            }
-                        });
-                    if ui.button("刷新").clicked() {
-                        self.refresh_ports();
-                    }
-                    if ui
-                        .add(egui::Button::new("连接 / 识卡").fill(Color32::from_rgb(27, 99, 92)))
-                        .on_hover_text("⌘R · 识别卡型与 UID")
-                        .clicked()
-                    {
-                        self.start(self.job(Operation::Scan));
-                    }
-                });
-            });
-        });
-        if self.sidebar {
-            egui::Panel::left("nav")
-                .default_size(190.)
-                .resizable(true)
-                .show(ui, |ui| {
-                    ui.add_space(18.);
-                    for (i, name) in PAGES.iter().enumerate() {
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 34.],
-                                egui::Button::new(*name)
-                                    .selected(self.page == i)
-                                    .frame(self.page == i),
-                            )
-                            .clicked()
-                        {
-                            self.page = i;
-                        }
-                        ui.add_space(8.);
-                    }
-                    ui.separator();
-                    ui.small(format!("v{}", env!("CARGO_PKG_VERSION")));
-                    if let Some(card) = &self.card {
-                        ui.label(format!("UID {}", card.uid));
-                        ui.label(format!("ATQA {} / SAK {}", card.atqa, card.sak));
-                        ui.weak(crate::pn532::classify(card))
-                            .on_hover_text("依据 ATQA/SAK 的只读判断，非精确芯片型号");
-                        match self.gen1a {
-                            Some(true) => {
-                                ui.weak("Gen1a 后门：是").on_hover_text(
-                                    "响应 40/43 后门，可能支持直接写 0 块 UID（只读探测，未写卡）",
-                                );
-                            }
-                            Some(false) => {
-                                ui.weak("Gen1a 后门：否").on_hover_text(
-                                    "未响应后门，普通卡或非 Gen1a 魔术卡（只读探测）",
-                                );
-                            }
-                            None => {}
-                        }
-                    }
-                });
-        }
-        egui::Panel::bottom("logs")
-            .default_size(150.)
-            .resizable(true)
-            .show(ui, |ui| {
-                ui.set_min_height(120.);
-                ui.horizontal(|ui| {
-                    if self.busy() {
-                        ui.spinner();
-                    }
-                    ui.strong(&self.status);
-                    if ui
-                        .add_enabled(self.busy(), egui::Button::new("停止任务"))
-                        .clicked()
-                    {
-                        self.cancel.store(true, Ordering::Relaxed);
-                        self.log("已请求停止，正在结束当前任务。".into());
-                    }
-                    if ui.button("保存日志").clicked()
-                        && let Some(p) = rfd::FileDialog::new()
-                            .set_file_name("pcr532.log")
-                            .save_file()
-                        && let Err(e) = document::atomic_write(&p, self.logs.join("\n").as_bytes())
-                    {
-                        self.error(e);
-                    }
-                });
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        if self.logs.is_empty() {
-                            ui.weak("任务记录会显示在这里。所有卡片数据仅保存在本机。");
-                        }
-                        for line in &self.logs {
-                            ui.monospace(line);
-                        }
-                    });
-            });
+        self.top_bar(ui);
+        self.status_bar(ui);
+        self.log_panel(ui);
+        self.left_operations(ui);
+        self.right_editor(ui);
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.add_space(14.);
-            ui.heading(PAGES[self.page]);
-            ui.add_space(18.);
+            ui.add_space(10.);
+            ui.horizontal(|ui| {
+                ui.strong(RichText::new("数据表 A · 解卡数据").size(15.));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(format!(
+                        "已知 {}/{} 块 · 选中 {}",
+                        self.document.known(),
+                        self.document.blocks.len(),
+                        self.selected.len()
+                    ));
+                });
+            });
+            ui.add_space(8.);
             ui.add_enabled_ui(!self.busy(), |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("page")
-                    .show(ui, |ui| match self.page {
-                        0 => {
-                            ui.label("读取、检查和备份你的测试卡。先连接设备，再选择读取方式。");
-                            ui.add_space(24.);
-                            ui.strong("当前卡片");
-                            ui.add_space(8.);
-                            if let Some(c) = &self.card {
-                                ui.monospace(format!("UID  {}", c.uid));
-                                ui.label(format!("ATQA {}    SAK {}", c.atqa, c.sak));
-                            } else {
-                                ui.weak("尚未识别卡片。将卡放到 IC 感应区后，点击顶部的连接按钮。");
-                            }
-                            ui.add_space(24.);
-                            ui.separator();
-                            ui.add_space(16.);
-                            ui.strong("开始读取");
-                            ui.add_space(8.);
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.button("使用密钥字典读取").clicked() { self.read(); }
-                                if ui.button("Fudan 本地完整读取").clicked() { self.start(self.job(Operation::FudanRead)); }
-                                if ui.button("Fudan 恢复密钥并读取").clicked() { self.start(self.job(Operation::FudanRecover)); }
-                                if ui.button("打开已有备份…").on_hover_text("⌘O").clicked() { self.import(); self.page = 1; }
-                            });
-                            ui.add_space(10.);
-                            ui.weak("普通卡使用密钥字典；固定加密随机数的 Fudan 兼容卡可尝试本地完整读取。");
-                            ui.add_space(24.);
-                            ui.strong("数据检查与写入");
-                            ui.label("在卡片数据页比较区块、编辑备份并导出。写入前需识别目标卡并确认待写内容。");
-                            if ui.button("查看卡片数据").clicked() { self.page = 1; }
-                        }
-                        1 => self.memory(ui),
-                        2 => self.keys(ui),
-                        3 => self.ntag(ui),
-                        4 => self.tools(ui),
-                        5 => {
-                            if ui.button("刷新本地备份").clicked() {
-                                self.refresh_archive();
-                            }
-                            let mut chosen = None;
-                            for p in &self.archive {
-                                if ui
-                                    .button(p.file_name().unwrap_or_default().to_string_lossy())
-                                    .clicked()
-                                {
-                                    chosen = Some(p.clone());
-                                }
-                            }
-                            if let Some(p) = chosen {
-                                match Document::load(&p) {
-                                    Ok(doc) => {
-                                        self.document = doc;
-                                        self.capacity = self.document.blocks.len();
-                                        self.edit_block = 0;
-                                        self.edit_hex.clear();
-                                        self.selected.clear();
-                                        self.page = 1;
-                                    }
-                                    Err(e) => self.error(e),
-                                }
-                            }
-                        }
-                        _ => {
-                            ui.label(include_str!("../docs/FEATURES.txt"));
-                        }
-                    });
+                self.block_table(ui);
             });
         });
         if let Some((job, summary)) = self.pending.clone() {
@@ -1064,8 +1161,8 @@ impl eframe::App for App {
 pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1240., 850.])
-            .with_min_inner_size([1000., 720.]),
+            .with_inner_size([1360., 880.])
+            .with_min_inner_size([1120., 740.]),
         ..Default::default()
     };
     eframe::run_native(
@@ -1095,10 +1192,10 @@ impl App {
                 })
                 .collect::<Vec<_>>()
         });
-        for image in images {
+        if let Some(image) = images.into_iter().next() {
             let result = (|| -> Result<()> {
                 std::fs::create_dir_all(&dir)?;
-                let f = std::fs::File::create(dir.join(format!("page-{}.png", self.page)))?;
+                let f = std::fs::File::create(dir.join("page-0.png"))?;
                 let mut encoder = png::Encoder::new(f, image.size[0] as u32, image.size[1] as u32);
                 encoder.set_color(png::ColorType::Rgba);
                 encoder.set_depth(png::BitDepth::Eight);
@@ -1109,16 +1206,12 @@ impl App {
             })();
             if let Err(e) = result {
                 eprintln!("Renderer smoke test: {e}");
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+            } else {
+                println!("Rendered single-page layout successfully");
             }
             self.smoke_requested = false;
-            if self.page == PAGES.len() - 1 {
-                println!("Rendered all {} pages successfully", PAGES.len());
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
-            self.page += 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
         if !self.smoke_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
