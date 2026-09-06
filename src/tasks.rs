@@ -63,6 +63,8 @@ pub struct Job {
 pub enum Event {
     Log(String),
     Card(Card),
+    /// Read-only Gen1a magic-backdoor probe result for the last scanned card.
+    Gen1a(bool),
     Document(Document),
     Ntag(Card, Vec<u8>),
     Done(Result<()>),
@@ -168,6 +170,21 @@ pub fn run(job: Job, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Result<()> 
             let card = reader.select(None)?;
             progress(format!("卡型：{}", crate::pn532::classify(&card)));
             let _ = tx.send(Event::Card(card));
+            // Read-only Gen1a backdoor probe: no write, UID unchanged.
+            match reader.gen1a_probe() {
+                Ok(magic) => {
+                    progress(format!(
+                        "Gen1a 魔术后门：{}",
+                        if magic {
+                            "是（响应 40/43 后门）"
+                        } else {
+                            "否（普通卡或非 Gen1a 魔术卡）"
+                        }
+                    ));
+                    let _ = tx.send(Event::Gen1a(magic));
+                }
+                Err(e) => progress(format!("Gen1a 探测跳过：{e}")),
+            }
         }
         Operation::Read { keys, blocks } => {
             let doc = reader.read_classic(&keys, blocks, &mut progress)?;

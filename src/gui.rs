@@ -40,6 +40,7 @@ pub struct App {
     recovery_key: String,
     recovery_b: bool,
     selected: BTreeSet<usize>,
+    gen1a: Option<bool>,
     trailers: bool,
     edit_block: usize,
     edit_hex: String,
@@ -124,6 +125,7 @@ impl App {
             recovery_key: "FFFFFFFFFFFF".into(),
             recovery_b: false,
             selected: BTreeSet::new(),
+            gen1a: None,
             trailers: false,
             edit_block: 0,
             edit_hex: String::new(),
@@ -208,6 +210,7 @@ impl App {
         }
         if matches!(job.operation, Operation::Scan) {
             self.card = None;
+            self.gen1a = None;
         }
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = self.cancel.clone();
@@ -236,6 +239,7 @@ impl App {
                     self.log(format!("UID {} · ATQA {} · SAK {}", c.uid, c.atqa, c.sak));
                     self.card = Some(c);
                 }
+                Event::Gen1a(magic) => self.gen1a = Some(magic),
                 Event::Document(d) => {
                     if let (Some(uid), Some(atqa), Some(sak)) =
                         (d.card.get("uid"), d.card.get("atqa"), d.card.get("sak"))
@@ -895,6 +899,19 @@ impl eframe::App for App {
                         ui.label(format!("ATQA {} / SAK {}", card.atqa, card.sak));
                         ui.weak(crate::pn532::classify(card))
                             .on_hover_text("依据 ATQA/SAK 的只读判断，非精确芯片型号");
+                        match self.gen1a {
+                            Some(true) => {
+                                ui.weak("Gen1a 后门：是").on_hover_text(
+                                    "响应 40/43 后门，可能支持直接写 0 块 UID（只读探测，未写卡）",
+                                );
+                            }
+                            Some(false) => {
+                                ui.weak("Gen1a 后门：否").on_hover_text(
+                                    "未响应后门，普通卡或非 Gen1a 魔术卡（只读探测）",
+                                );
+                            }
+                            None => {}
+                        }
                     }
                 });
         }
