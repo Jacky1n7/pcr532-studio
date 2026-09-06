@@ -27,6 +27,7 @@ const PAGES: [&str; 7] = [
 pub struct App {
     smoke_requested: bool,
     page: usize,
+    sidebar: bool,
     ports: Vec<String>,
     port: String,
     baud: u32,
@@ -34,6 +35,10 @@ pub struct App {
     document: Document,
     capacity: usize,
     keys: String,
+    recovery_source: usize,
+    recovery_target: usize,
+    recovery_key: String,
+    recovery_b: bool,
     selected: BTreeSet<usize>,
     trailers: bool,
     edit_block: usize,
@@ -67,6 +72,17 @@ impl App {
         style.spacing.button_padding = egui::vec2(14., 8.);
         style.visuals.panel_fill = Color32::from_rgb(16, 23, 33);
         style.visuals.selection.bg_fill = Color32::from_rgb(32, 108, 106);
+        style.visuals.override_text_color = Some(Color32::from_rgb(229, 235, 239));
+        style.spacing.interact_size.y = 30.;
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.));
         ctx.set_style_of(egui::Theme::Dark, style);
         let mut fonts = egui::FontDefinitions::default();
         for path in [
@@ -95,6 +111,7 @@ impl App {
         let mut app = Self {
             smoke_requested: false,
             page: 0,
+            sidebar: true,
             ports: vec![],
             port: String::new(),
             baud: 115200,
@@ -102,6 +119,10 @@ impl App {
             document: Document::empty(64).expect("valid capacity"),
             capacity: 64,
             keys: "FFFFFFFFFFFF\nA0A1A2A3A4A5\nD3F7D3F7D3F7".into(),
+            recovery_source: 0,
+            recovery_target: 4,
+            recovery_key: "FFFFFFFFFFFF".into(),
+            recovery_b: false,
             selected: BTreeSet::new(),
             trailers: false,
             edit_block: 0,
@@ -477,7 +498,54 @@ impl App {
             }
         });
         ui.separator();
-        ui.label("未知密钥恢复：nested / hardnested / DarkSide 的纯 Rust 算法迁移尚未完成。此版本不调用旧 C 工具，也不会将字典认证显示为未知密钥恢复。");
+        ui.add_space(8.);
+        ui.strong("固定加密随机数卡");
+        ui.label("Fudan 1K 兼容卡可尝试本地诊断读取。读取所有数据块，不修改卡片；普通 A/B 密钥需单独恢复。");
+        if ui.button("Fudan 本地完整读取").clicked() {
+            self.start(self.job(Operation::FudanRead));
+        }
+        if ui.button("Fudan 恢复普通密钥并读取").clicked() {
+            self.start(self.job(Operation::FudanRecover));
+        }
+        ui.weak("通过固定随机数与跨扇区密钥复用筛选候选，只有通过普通认证的密钥才会写入备份。");
+        ui.add_space(12.);
+        ui.label("本地 nested 恢复（实验）：使用一个已知 A 密钥，恢复指定目标块的 A/B 密钥。只执行认证和读取。");
+        ui.horizontal(|ui| {
+            ui.label("已知 A 密钥块");
+            ui.add(egui::DragValue::new(&mut self.recovery_source).range(0..=255));
+            ui.add(
+                TextEdit::singleline(&mut self.recovery_key)
+                    .password(true)
+                    .desired_width(150.),
+            );
+            ui.label("目标块");
+            ui.add(egui::DragValue::new(&mut self.recovery_target).range(0..=255));
+            ui.checkbox(&mut self.recovery_b, "恢复 Key B");
+        });
+        ui.horizontal(|ui| {
+            let kind = if self.recovery_b { "B" } else { "A" }.to_owned();
+            if ui.button("随机数诊断").clicked() {
+                self.start(self.job(Operation::Diagnose {
+                    block: self.recovery_target,
+                    kind: kind.clone(),
+                }));
+            }
+            if ui.button("尝试 nested 并重读").clicked() {
+                match document::parse_keys(&self.keys) {
+                    Ok(keys) => self.start(self.job(Operation::Nested {
+                        source: self.recovery_source,
+                        known: self.recovery_key.clone(),
+                        target: self.recovery_target,
+                        kind,
+                        keys,
+                    })),
+                    Err(e) => self.error(e),
+                }
+            }
+        });
+        ui.label(
+            "每次搜索最多 240 秒，支持停止；失败只代表此次方法未成功。hardnested / DarkSide 尚未迁移。",
+        );
     }
     fn ntag(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -739,10 +807,34 @@ impl eframe::App for App {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        if !self.busy() {
+            let modifiers = egui::Modifiers::COMMAND;
+            if ui.input_mut(|i| i.consume_key(modifiers, egui::Key::O)) {
+                self.import();
+            }
+            if ui.input_mut(|i| i.consume_key(modifiers, egui::Key::S)) {
+                self.export();
+            }
+            if ui.input_mut(|i| i.consume_key(modifiers, egui::Key::R)) {
+                self.start(self.job(Operation::Scan));
+            }
+        }
         egui::Panel::top("header").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(RichText::new("PCR532").color(Color32::from_rgb(88, 205, 186)));
-                ui.label("STUDIO / RUST");
+            ui.add_space(8.);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button("侧栏")
+                    .on_hover_text("显示或隐藏导航侧栏")
+                    .clicked()
+                {
+                    self.sidebar = !self.sidebar;
+                }
+                ui.strong(
+                    RichText::new("PCR532 Studio")
+                        .size(17.)
+                        .color(Color32::from_rgb(88, 205, 186)),
+                );
+                ui.separator();
                 ui.add_enabled_ui(!self.busy(), |ui| {
                     egui::ComboBox::from_id_salt("port")
                         .selected_text(if self.port.is_empty() {
@@ -766,43 +858,60 @@ impl eframe::App for App {
                     if ui.button("刷新").clicked() {
                         self.refresh_ports();
                     }
-                    if ui.button("连接 / 识卡").clicked() {
+                    if ui
+                        .add(egui::Button::new("连接 / 识卡").fill(Color32::from_rgb(27, 99, 92)))
+                        .on_hover_text("⌘R · 识别卡型与 UID")
+                        .clicked()
+                    {
                         self.start(self.job(Operation::Scan));
                     }
                 });
             });
         });
-        egui::Panel::left("nav").exact_size(170.).show(ui, |ui| {
-            ui.add_space(24.);
-            for (i, name) in PAGES.iter().enumerate() {
-                if ui
-                    .selectable_label(self.page == i, format!("{:02}  {name}", i + 1))
-                    .clicked()
-                {
-                    self.page = i;
-                }
-                ui.add_space(8.);
-            }
-            ui.separator();
-            ui.label(format!("v{} · Rust", env!("CARGO_PKG_VERSION")));
-            if let Some(card) = &self.card {
-                ui.label(format!("UID {}", card.uid));
-                ui.label(format!("ATQA {} / SAK {}", card.atqa, card.sak));
-            }
-        });
+        if self.sidebar {
+            egui::Panel::left("nav")
+                .default_size(190.)
+                .resizable(true)
+                .show(ui, |ui| {
+                    ui.add_space(18.);
+                    for (i, name) in PAGES.iter().enumerate() {
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 34.],
+                                egui::Button::new(*name)
+                                    .selected(self.page == i)
+                                    .frame(self.page == i),
+                            )
+                            .clicked()
+                        {
+                            self.page = i;
+                        }
+                        ui.add_space(8.);
+                    }
+                    ui.separator();
+                    ui.small(format!("v{}", env!("CARGO_PKG_VERSION")));
+                    if let Some(card) = &self.card {
+                        ui.label(format!("UID {}", card.uid));
+                        ui.label(format!("ATQA {} / SAK {}", card.atqa, card.sak));
+                    }
+                });
+        }
         egui::Panel::bottom("logs")
             .default_size(150.)
             .resizable(true)
             .show(ui, |ui| {
                 ui.set_min_height(120.);
                 ui.horizontal(|ui| {
-                    ui.label(&self.status);
+                    if self.busy() {
+                        ui.spinner();
+                    }
+                    ui.strong(&self.status);
                     if ui
                         .add_enabled(self.busy(), egui::Button::new("停止任务"))
                         .clicked()
                     {
                         self.cancel.store(true, Ordering::Relaxed);
-                        self.log("已请求停止；写入可能已部分完成，请重新读取核对。".into());
+                        self.log("已请求停止，正在结束当前任务。".into());
                     }
                     if ui.button("保存日志").clicked()
                         && let Some(p) = rfd::FileDialog::new()
@@ -816,33 +925,50 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
+                        if self.logs.is_empty() {
+                            ui.weak("任务记录会显示在这里。所有卡片数据仅保存在本机。");
+                        }
                         for line in &self.logs {
                             ui.monospace(line);
                         }
                     });
             });
         egui::CentralPanel::default().show(ui, |ui| {
+            ui.add_space(14.);
             ui.heading(PAGES[self.page]);
-            ui.add_space(12.);
+            ui.add_space(18.);
             ui.add_enabled_ui(!self.busy(), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("page")
                     .show(ui, |ui| match self.page {
                         0 => {
-                            ui.heading("本地卡片工作台");
-                            ui.label("Rust 桌面界面 · PN532 UART 直连 · 本地备份");
-                            ui.add_space(20.);
+                            ui.label("读取、检查和备份你的测试卡。先连接设备，再选择读取方式。");
+                            ui.add_space(24.);
+                            ui.strong("当前卡片");
+                            ui.add_space(8.);
                             if let Some(c) = &self.card {
-                                ui.heading(&c.uid);
+                                ui.monospace(format!("UID  {}", c.uid));
                                 ui.label(format!("ATQA {}    SAK {}", c.atqa, c.sak));
                             } else {
-                                ui.label("选择串口并连接，将卡片放在 IC 感应区。");
+                                ui.weak("尚未识别卡片。将卡放到 IC 感应区后，点击顶部的连接按钮。");
                             }
-                            ui.add_space(20.);
-                            ui.label("写入前先识别目标卡，检查待写数据；应用只在确认后执行写入。");
-                            if ui.button("进入卡片数据").clicked() {
-                                self.page = 1;
-                            }
+                            ui.add_space(24.);
+                            ui.separator();
+                            ui.add_space(16.);
+                            ui.strong("开始读取");
+                            ui.add_space(8.);
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.button("使用密钥字典读取").clicked() { self.read(); }
+                                if ui.button("Fudan 本地完整读取").clicked() { self.start(self.job(Operation::FudanRead)); }
+                                if ui.button("Fudan 恢复密钥并读取").clicked() { self.start(self.job(Operation::FudanRecover)); }
+                                if ui.button("打开已有备份…").on_hover_text("⌘O").clicked() { self.import(); self.page = 1; }
+                            });
+                            ui.add_space(10.);
+                            ui.weak("普通卡使用密钥字典；固定加密随机数的 Fudan 兼容卡可尝试本地完整读取。");
+                            ui.add_space(24.);
+                            ui.strong("数据检查与写入");
+                            ui.label("在卡片数据页比较区块、编辑备份并导出。写入前需识别目标卡并确认待写内容。");
+                            if ui.button("查看卡片数据").clicked() { self.page = 1; }
                         }
                         1 => self.memory(ui),
                         2 => self.keys(ui),

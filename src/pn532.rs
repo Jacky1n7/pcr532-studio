@@ -100,6 +100,7 @@ pub struct Reader {
     pub cancel: Arc<AtomicBool>,
     pub card: Option<Card>,
     target: u8,
+    register_cache: BTreeMap<u16, u8>,
 }
 impl Drop for Reader {
     fn drop(&mut self) {
@@ -121,8 +122,10 @@ impl Reader {
             cancel,
             card: None,
             target: 1,
+            register_cache: BTreeMap::new(),
         };
         r.command(0x14, &[1], Duration::from_secs(2))?;
+        r.standard_framing()?;
         r.command(0x32, &[5, 0xff, 1, 2], Duration::from_secs(2))?;
         Ok(r)
     }
@@ -174,11 +177,114 @@ impl Reader {
             d[0], d[1], d[2], d[3]
         ))
     }
+    pub fn read_register(&mut self, address: u16) -> Result<u8> {
+        let data = self.command(0x06, &address.to_be_bytes(), Duration::from_secs(2))?;
+        ensure!(data.len() == 1, "PN532 寄存器响应长度错误");
+        self.register_cache.insert(address, data[0]);
+        Ok(data[0])
+    }
+    pub fn standard_framing(&mut self) -> Result<()> {
+        self.register_bits(0x6302, 0x80, 0x80)?;
+        self.register_bits(0x6303, 0x80, 0x80)?;
+        self.register_bits(0x630d, 0x10, 0)?;
+        self.register_bits(0x633d, 0x07, 0)?;
+        self.register_bits(0x6338, 0x08, 0)
+    }
+    /// Host-supplied encrypted parity; bits are packed in on-air LSB-first order.
+    pub fn raw_parity(&mut self, data: &[u8], parity: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        ensure!(
+            !data.is_empty() && data.len() <= 64 && parity.len() == data.len(),
+            "原始数据/奇偶位长度错误"
+        );
+        let mut packed = vec![0u8; (data.len() * 9).div_ceil(8)];
+        for (i, byte) in data.iter().enumerate() {
+            for bit in 0..9 {
+                let v = if bit == 8 {
+                    parity[i] & 1
+                } else {
+                    (byte >> bit) & 1
+                };
+                let position = i * 9 + bit;
+                packed[position / 8] |= v << (position % 8);
+            }
+        }
+        self.register_bits(0x630d, 0x10, 0x10)?;
+        self.register_bits(0x633d, 0x07, ((data.len() * 9) % 8) as u8)?;
+        let response = self.command(0x42, &packed, Duration::from_secs(3))?;
+        ensure!(
+            response.first() == Some(&0) && response.len() > 1,
+            "带奇偶位的射频交换失败: {}",
+            hex::encode_upper(&response)
+        );
+        let tail = usize::from(self.read_register(0x633c)? & 7);
+        let bytes = &response[1..];
+        let bits = if tail == 0 {
+            bytes.len() * 8
+        } else {
+            (bytes.len() - 1) * 8 + tail
+        };
+        ensure!(bits % 9 == 0, "预期完整字节及奇偶位，收到 {bits} 位");
+        let mut output = vec![0u8; bits / 9];
+        let mut parity = vec![0u8; bits / 9];
+        for i in 0..output.len() {
+            for bit in 0..9 {
+                let position = i * 9 + bit;
+                let v = (bytes[position / 8] >> (position % 8)) & 1;
+                if bit == 8 {
+                    parity[i] = v;
+                } else {
+                    output[i] |= v << bit;
+                }
+            }
+        }
+        Ok((output, parity))
+    }
+    pub fn write_register(&mut self, address: u16, value: u8) -> Result<()> {
+        let [hi, lo] = address.to_be_bytes();
+        let data = self.command(0x08, &[hi, lo, value], Duration::from_secs(2))?;
+        ensure!(data.is_empty(), "PN532 寄存器写入响应错误");
+        self.register_cache.insert(address, value);
+        Ok(())
+    }
+    /// Change only the requested bits, preserving modulation and rate settings.
+    pub fn register_bits(&mut self, address: u16, mask: u8, value: u8) -> Result<()> {
+        // Cache only configuration registers owned by this driver. This avoids
+        // unnecessary USB round trips between authentication frames.
+        let cached = if address == 0x6338 {
+            None
+        } else {
+            self.register_cache.get(&address)
+        };
+        let old = match cached {
+            Some(v) => *v,
+            None => self.read_register(address)?,
+        };
+        let new = (old & !mask) | (value & mask);
+        if old != new {
+            self.write_register(address, new)?;
+        }
+        Ok(())
+    }
+    /// ISO14443A raw exchange, with hardware parity and optional automatic CRC.
+    pub fn raw_bytes(&mut self, data: &[u8], crc: bool) -> Result<Vec<u8>> {
+        self.register_bits(0x6302, 0x80, if crc { 0x80 } else { 0 })?;
+        self.register_bits(0x6303, 0x80, if crc { 0x80 } else { 0 })?;
+        self.register_bits(0x630d, 0x10, 0)?;
+        self.register_bits(0x633d, 0x07, 0)?;
+        let result = self.command(0x42, data, Duration::from_secs(3))?;
+        ensure!(
+            result.first() == Some(&0),
+            "原始射频响应错误: {}",
+            hex::encode_upper(&result)
+        );
+        Ok(result[1..].to_vec())
+    }
     pub fn select(&mut self, expected: Option<&str>) -> Result<Card> {
         self.command(0x32, &[1, 0], Duration::from_secs(2))?;
         std::thread::sleep(Duration::from_millis(10));
         self.command(0x32, &[1, 1], Duration::from_secs(2))?;
         let data = self.command(0x4a, &[1, 0], Duration::from_secs(3))?;
+        self.register_cache.clear();
         ensure!(data.len() >= 2, "卡片响应过短");
         self.target = data[1];
         let card = parse_target(&data)?;
