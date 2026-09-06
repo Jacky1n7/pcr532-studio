@@ -363,7 +363,8 @@ impl App {
                     .striped(true)
                     .min_col_width(45.)
                     .show(ui, |ui| {
-                        for title in ["选择", "扇区", "块", "HEX · 双击编辑", "状态"] {
+                        for title in ["选择", "扇区", "块", "HEX · 点击后在下方编辑", "状态"]
+                        {
                             ui.strong(title);
                         }
                         ui.end_row();
@@ -666,6 +667,10 @@ impl App {
                             == rfd::MessageDialogResult::Ok
                         {
                             self.document = doc;
+                            self.capacity = self.document.blocks.len();
+                            self.selected.clear();
+                            self.edit_block = 0;
+                            self.edit_hex.clear();
                             self.page = 1;
                         }
                     }
@@ -789,6 +794,7 @@ impl eframe::App for App {
             .default_size(150.)
             .resizable(true)
             .show(ui, |ui| {
+                ui.set_min_height(120.);
                 ui.horizontal(|ui| {
                     ui.label(&self.status);
                     if ui
@@ -859,6 +865,9 @@ impl eframe::App for App {
                                 match Document::load(&p) {
                                     Ok(doc) => {
                                         self.document = doc;
+                                        self.capacity = self.document.blocks.len();
+                                        self.edit_block = 0;
+                                        self.edit_hex.clear();
                                         self.selected.clear();
                                         self.page = 1;
                                     }

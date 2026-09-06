@@ -5,6 +5,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let op = args.get(1).map(String::as_str).unwrap_or("gui");
     match op {
+        "--version" | "-V" => println!("PCR532 Studio {}", env!("CARGO_PKG_VERSION")),
         "gui" => pcr532_studio::gui::run()?,
         "scan" | "read" => {
             let port = args.get(2).context("请指定串口")?;

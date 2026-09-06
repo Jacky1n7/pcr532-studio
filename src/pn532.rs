@@ -484,3 +484,28 @@ mod tests {
         assert!(validate_write(&doc, &[1, 3], 64, true).is_ok());
     }
 }
+
+#[cfg(test)]
+mod hardware_tests {
+    use super::*;
+    #[test]
+    #[ignore = "Requires an authorized card and PCR532_TEST_PORT"]
+    fn hardware_cancel_releases_device() {
+        let port = std::env::var("PCR532_TEST_PORT").expect("set PCR532_TEST_PORT");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut reader = Reader::open(&port, 115200, cancel.clone()).unwrap();
+        reader.select(None).unwrap();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            cancel.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = reader.read_classic(&["FFFFFFFFFFFF".into()], 64, |_| {});
+        stopper.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("任务已停止"));
+        assert!(start.elapsed() < Duration::from_secs(3));
+        drop(reader);
+        let mut reopened = Reader::open(&port, 115200, Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(reopened.firmware().unwrap().starts_with("PN532"));
+    }
+}

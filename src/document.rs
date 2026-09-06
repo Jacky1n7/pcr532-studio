@@ -389,3 +389,72 @@ mod tests {
         assert!(d.validate().is_err());
     }
 }
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    struct Temp(std::path::PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let p = std::env::temp_dir().join(format!("pcr532-test-{}-{n}", std::process::id()));
+            std::fs::create_dir(&p).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn partial_roundtrip_preserves_unknowns() {
+        let temp = Temp::new();
+        let mut doc = Document::empty(64).unwrap();
+        doc.set_block(1, &"AB".repeat(16)).unwrap();
+        let path = temp.0.join("partial.json");
+        doc.save(&path).unwrap();
+        assert_eq!(Document::load(&path).unwrap().blocks, doc.blocks);
+        let binary = temp.0.join("incomplete.mfd");
+        assert!(doc.save(&binary).is_err());
+        assert!(!binary.exists());
+    }
+    #[test]
+    fn export_does_not_destroy_existing_file_on_validation_error() {
+        let temp = Temp::new();
+        let path = temp.0.join("existing.mfd");
+        std::fs::write(&path, b"keep-me").unwrap();
+        assert!(Document::empty(64).unwrap().save(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), b"keep-me");
+    }
+    #[test]
+    fn complete_dump_roundtrips_and_rejects_bad_mct() {
+        let temp = Temp::new();
+        let doc = Document::blank(256).unwrap();
+        for ext in ["mfd", "mct", "eml"] {
+            let path = temp.0.join(format!("complete.{ext}"));
+            doc.save(&path).unwrap();
+            assert_eq!(Document::load(&path).unwrap().blocks, doc.blocks);
+        }
+        let path = temp.0.join("bad.mct");
+        std::fs::write(
+            &path,
+            format!(
+                "+Sector: 1\n{}",
+                format!("{}\n", "00".repeat(16)).repeat(64)
+            ),
+        )
+        .unwrap();
+        assert!(Document::load(&path).is_err());
+    }
+    #[test]
+    fn masked_keys_cannot_be_exported_as_real_keys() {
+        let temp = Temp::new();
+        let mut doc = Document::blank(64).unwrap();
+        doc.notes.insert("source".into(), "live".into());
+        assert!(doc.save(&temp.0.join("masked.mfd")).is_err());
+    }
+}

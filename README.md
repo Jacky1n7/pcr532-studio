@@ -81,3 +81,11 @@ PCR532_SMOKE_DIR=/tmp/pcr532-ui cargo run --bin pcr532-studio -- gui
 - 版本差异记录在 [CHANGELOG.md](CHANGELOG.md)，未完成事项在 GitHub Issues 跟踪。
 
 独立实现代码使用 MIT 许可；依赖许可见 [THIRD_PARTY.md](THIRD_PARTY.md)。Rust crate 使用 macOS 系统 API/框架，不意味着系统底层代码也是 Rust。协议参考 [NXP PN532 手册](https://www.nxp.com/docs/en/user-guide/141520.pdf)。
+
+实机只读取消自检（默认 CI 跳过，需自有/授权卡）：
+
+```sh
+PCR532_TEST_PORT=/dev/cu.usbserial-110 cargo test hardware_cancel_releases_device -- --ignored
+```
+
+目前已通过 16 项自动测试、七页界面渲染自检和上述实机取消/重连测试。后续恢复算法与专有功能分别在 [Issue #1](https://github.com/Jacky1n7/pcr532-studio/issues/1)、[Issue #2](https://github.com/Jacky1n7/pcr532-studio/issues/2) 跟踪。
