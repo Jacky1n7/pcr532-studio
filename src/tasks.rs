@@ -165,7 +165,9 @@ pub fn run(job: Job, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Result<()> 
         Operation::VendorRead { .. } => unreachable!(),
         Operation::Scan => {
             progress(reader.firmware()?);
-            let _ = tx.send(Event::Card(reader.select(None)?));
+            let card = reader.select(None)?;
+            progress(format!("卡型：{}", crate::pn532::classify(&card)));
+            let _ = tx.send(Event::Card(card));
         }
         Operation::Read { keys, blocks } => {
             let doc = reader.read_classic(&keys, blocks, &mut progress)?;
