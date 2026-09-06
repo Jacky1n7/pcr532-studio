@@ -239,6 +239,63 @@ impl Reader {
         }
         Ok((output, parity))
     }
+    /// Send a raw frame of exactly `bits` bits (no CRC, no parity) and return the
+    /// card's bit-level reply. Used only for the short non-standard frames of
+    /// the Gen1a "magic" backdoor; standard traffic uses `raw_bytes`.
+    /// Returns the raw InCommunicateThru reply *including* its leading status
+    /// byte. A non-zero status (e.g. 0x01, no card response) is a valid outcome
+    /// for backdoor probing — a normal card simply ignores the frame — so the
+    /// caller decides how to interpret it rather than treating it as an error.
+    fn raw_short_frame(&mut self, data: &[u8], bits: usize) -> Result<Vec<u8>> {
+        ensure!(!data.is_empty() && bits > 0, "短帧长度错误");
+        // No CRC on TX or RX; transmit exactly `bits % 8` residual bits.
+        self.register_bits(0x6302, 0x80, 0)?;
+        self.register_bits(0x6303, 0x80, 0)?;
+        self.register_bits(0x630d, 0x10, 0x10)?;
+        self.register_bits(0x633d, 0x07, (bits % 8) as u8)?;
+        let response = self.command(0x42, data, Duration::from_secs(1))?;
+        ensure!(!response.is_empty(), "短帧无响应");
+        Ok(response)
+    }
+
+    /// True if a short-frame reply is a magic-card ACK (status 0, payload nibble
+    /// 0x0A). Any other status or payload means the card did not accept the
+    /// backdoor, which is the normal case for genuine and non-Gen1a cards.
+    fn is_magic_ack(reply: &[u8]) -> bool {
+        reply.first() == Some(&0) && reply.get(1).map(|b| b & 0x0f) == Some(0x0a)
+    }
+
+    /// Read-only probe for a Gen1a "magic" backdoor card.
+    ///
+    /// Gen1a magic cards answer a non-standard wake-up: a 7-bit `0x40` frame,
+    /// then a full `0x43` byte, each acknowledged. Genuine MIFARE Classic and
+    /// most clones do not respond. This performs NO write, does not alter the
+    /// UID or any block, and re-selects the card afterwards so the caller's
+    /// session is left in a clean state. Returns `Ok(true)` only when both
+    /// backdoor steps are acknowledged.
+    ///
+    /// A card must already be selected (so the UID can be restored on exit).
+    pub fn gen1a_probe(&mut self) -> Result<bool> {
+        let expected = self.card.as_ref().map(|c| c.uid.clone());
+        // Step 1: 7-bit 0x40 wake-up. A magic card ACKs with a 4-bit 0x0A.
+        let magic = (|| -> Result<bool> {
+            // A non-magic card ignores the backdoor: the reply carries a
+            // non-zero status, which is a definite "not Gen1a", not an error.
+            if !Self::is_magic_ack(&self.raw_short_frame(&[0x40], 7)?) {
+                return Ok(false);
+            }
+            // Step 2: full 0x43 byte, also ACKed with 0x0A by a magic card.
+            Ok(Self::is_magic_ack(&self.raw_short_frame(&[0x43], 8)?))
+        })();
+        // Always restore standard framing and re-select, regardless of outcome,
+        // so a non-magic card or an error never leaves us mid-backdoor.
+        let _ = self.standard_framing();
+        let reselect = self.select(expected.as_deref());
+        let magic = magic?;
+        reselect?;
+        Ok(magic)
+    }
+
     pub fn write_register(&mut self, address: u16, value: u8) -> Result<()> {
         let [hi, lo] = address.to_be_bytes();
         let data = self.command(0x08, &[hi, lo, value], Duration::from_secs(2))?;
@@ -623,6 +680,17 @@ mod tests {
         assert!(unknown.contains("未知") && unknown.contains("非精确芯片型号"));
         // 7-byte UID note is surfaced.
         assert!(classify(&card("0044", "00", "04010203040506")).contains("7 字节"));
+    }
+    #[test]
+    fn gen1a_ack_recognition() {
+        // Magic ACK: status 0x00 then a 0x0A nibble.
+        assert!(Reader::is_magic_ack(&[0x00, 0x0a]));
+        assert!(Reader::is_magic_ack(&[0x00, 0xfa])); // only low nibble matters
+        // No-response status (0x01) is not an ACK — this is a normal card.
+        assert!(!Reader::is_magic_ack(&[0x01]));
+        assert!(!Reader::is_magic_ack(&[0x00, 0x00]));
+        assert!(!Reader::is_magic_ack(&[0x00])); // status ok but no payload
+        assert!(!Reader::is_magic_ack(&[]));
     }
     #[test]
     fn preflight() {
