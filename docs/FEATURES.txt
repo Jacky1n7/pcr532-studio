@@ -1,0 +1,24 @@
+Rust 迁移状态（0.2.0）
+
+已迁移：
+• Rust 桌面界面、后台线程、取消、串口枚举
+• PN532 UART 帧编解码、ACK / 校验 / 超时、IC 识卡
+• Classic 默认密钥与字典认证、部分读取、写卡及回读校验
+• JSON / MFD / BIN / MCT / EML 备份、编辑、比较、合并
+• 密钥字典、访问位检查、值块生成与解码
+• NTAG 用户区读写、PWD 认证
+• 文本 / 网址 / 电话 / 名片 / Wi-Fi / 蓝牙 / Android NDEF
+• 厂商 HID / ID 扩展读取（待低频卡验证）
+• Rust Type 4 NDEF 只读模拟（待手机实测）
+
+尚未迁移：
+• nested / hardnested / DarkSide 未知密钥恢复算法
+• Gen1a UID 改写
+
+原版 Windows 功能仍待实现：
+• HID / ID 写卡、多频率、GDM / UFUID / MFF08
+• 侦测卡、变色龙 GP、手机 / 手环向导
+• 云端账号和云卡功能依赖原厂服务
+
+当前构建不调用 Python、libnfc 或 C 恢复工具。
+所有未验证写入功能需要对应测试卡完成验证。

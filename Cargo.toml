@@ -1,0 +1,26 @@
+[package]
+name = "pcr532-studio"
+version = "0.2.0-alpha.1"
+edition = "2024"
+rust-version = "1.92"
+description = "Rust desktop utility for authorized PCR532 RFID card testing"
+license = "MIT"
+repository = "https://github.com/Jacky1n7/pcr532-studio"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+hex = "0.4"
+png = "0.18"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = { version = "4.8", default-features = false }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[[bin]]
+name = "pcr532-studio"
+path = "src/main.rs"
