@@ -312,16 +312,26 @@ impl Document {
         Ok(out)
     }
 }
+pub fn unique_id() -> Result<String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    Ok(format!(
+        "{stamp}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
-    let tmp = parent.join(format!(".pcr532-{}-{stamp}.tmp", std::process::id()));
+    let tmp = parent.join(format!(".pcr532-{}.tmp", unique_id()?));
+    let mut owned = false;
     let result = (|| -> Result<()> {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -331,12 +341,13 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
             opts.mode(0o600);
         }
         let mut f = opts.open(&tmp)?;
+        owned = true;
         f.write_all(data)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)?;
         Ok(())
     })();
-    if result.is_err() {
+    if result.is_err() && owned {
         let _ = std::fs::remove_file(&tmp);
     }
     result
@@ -396,11 +407,7 @@ mod persistence_tests {
     struct Temp(std::path::PathBuf);
     impl Temp {
         fn new() -> Self {
-            let n = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let p = std::env::temp_dir().join(format!("pcr532-test-{}-{n}", std::process::id()));
+            let p = std::env::temp_dir().join(format!("pcr532-test-{}", unique_id().unwrap()));
             std::fs::create_dir(&p).unwrap();
             Self(p)
         }
@@ -456,5 +463,23 @@ mod persistence_tests {
         let mut doc = Document::blank(64).unwrap();
         doc.notes.insert("source".into(), "live".into());
         assert!(doc.save(&temp.0.join("masked.mfd")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    #[test]
+    fn temporary_names_are_unique_across_threads() {
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| (0..1000).map(|_| unique_id().unwrap()).collect::<Vec<_>>())
+            })
+            .collect();
+        let names: std::collections::HashSet<_> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        assert_eq!(names.len(), 8000);
     }
 }

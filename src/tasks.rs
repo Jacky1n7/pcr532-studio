@@ -64,10 +64,7 @@ pub fn data_dir() -> PathBuf {
 pub fn archive(doc: &Document) -> Result<PathBuf> {
     let dir = data_dir();
     std::fs::create_dir_all(&dir)?;
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_nanos();
-    let path = dir.join(format!("rust-{time}.json"));
+    let path = dir.join(format!("rust-{}.json", crate::document::unique_id()?));
     doc.save(&path)?;
     Ok(path)
 }

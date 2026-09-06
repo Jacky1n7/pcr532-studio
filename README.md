@@ -2,7 +2,7 @@
 
 用于自有或获授权测试卡的 macOS 桌面工具。应用界面、PN532 串口通信、卡片数据处理、NDEF 和打包工具均用 Rust 实现；不调用 Python、Qt、libnfc 或旧的 C 恢复程序。
 
-**当前版本：0.2.0-alpha.1。Rust 基础迁移已可运行，尚未完成旧版所有功能的迁移，更不是 Windows 原版的完整复刻。** 特别是 nested、hardnested、DarkSide 的纯 Rust 恢复算法尚未实现，不能把字典认证当作未知密钥恢复。完整差异见 [迁移状态](docs/FEATURES.txt)。
+**当前版本：0.2.0-alpha.2。Rust 基础迁移已可运行，尚未完成旧版所有功能的迁移，更不是 Windows 原版的完整复刻。** 特别是 nested、hardnested、DarkSide 的纯 Rust 恢复算法尚未实现，不能把字典认证当作未知密钥恢复。完整差异见 [迁移状态](docs/FEATURES.txt)。
 
 ## 已验证
 
@@ -46,7 +46,7 @@ cargo test --locked
 cargo run --bin xtask
 ```
 
-`xtask` 本身也是 Rust，调用 Cargo 编译与 macOS 系统签名/归档工具，输出 `dist/PCR532 Studio Rust.app` 和带版本号的 ZIP。
+`xtask` 本身也是 Rust，调用 Cargo 编译与 macOS 系统签名/归档工具，输出 `dist/<版本>/PCR532 Studio Rust.app` 和带版本号的 ZIP。
 
 命令行只读诊断：
 
@@ -88,4 +88,4 @@ PCR532_SMOKE_DIR=/tmp/pcr532-ui cargo run --bin pcr532-studio -- gui
 PCR532_TEST_PORT=/dev/cu.usbserial-110 cargo test hardware_cancel_releases_device -- --ignored
 ```
 
-目前已通过 16 项自动测试、七页界面渲染自检和上述实机取消/重连测试。后续恢复算法与专有功能分别在 [Issue #1](https://github.com/Jacky1n7/pcr532-studio/issues/1)、[Issue #2](https://github.com/Jacky1n7/pcr532-studio/issues/2) 跟踪。
+目前已通过 17 项自动测试、七页界面渲染自检和上述实机取消/重连测试。后续恢复算法与专有功能分别在 [Issue #1](https://github.com/Jacky1n7/pcr532-studio/issues/1)、[Issue #2](https://github.com/Jacky1n7/pcr532-studio/issues/2) 跟踪。

@@ -15,14 +15,21 @@ fn main() -> Result<()> {
     let mut build = Command::new("cargo");
     build.args(["build", "--release", "--locked", "--bin", "pcr532-studio"]);
     checked(build)?;
-    let app = Path::new("dist/PCR532 Studio Rust.app");
+    let version = env!("CARGO_PKG_VERSION");
+    let app_path = Path::new("dist")
+        .join(version)
+        .join("PCR532 Studio Rust.app");
+    let app = app_path.as_path();
     let macos = app.join("Contents/MacOS");
     let resources = app.join("Contents/Resources");
     std::fs::create_dir_all(&macos)?;
     std::fs::create_dir_all(&resources)?;
     std::fs::copy("target/release/pcr532-studio", macos.join("pcr532-studio"))?;
-    let version = env!("CARGO_PKG_VERSION");
     let short = version.split('-').next().unwrap_or(version);
+    let build_version = version
+        .replace("-alpha.", "a")
+        .replace("-beta.", "b")
+        .replace("-rc.", "fc");
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -33,7 +40,7 @@ fn main() -> Result<()> {
 <key>CFBundleExecutable</key><string>pcr532-studio</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>{short}</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>{build_version}</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
