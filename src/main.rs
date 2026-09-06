@@ -7,7 +7,8 @@ fn main() -> Result<()> {
     match op {
         "--version" | "-V" => println!("PCR532 Studio {}", env!("CARGO_PKG_VERSION")),
         "gui" => pcr532_studio::gui::run()?,
-        "scan" | "read" | "diagnose" | "nested" | "fudan-read" | "fudan-recover" | "verify" => {
+        "scan" | "identify" | "read" | "diagnose" | "nested" | "fudan-read" | "fudan-recover"
+        | "verify" => {
             let port = args.get(2).context("请指定串口")?;
             let mut reader = pn532::Reader::open(port, 115200, Arc::new(AtomicBool::new(false)))?;
             println!("{}", reader.firmware()?);
@@ -67,6 +68,26 @@ fn main() -> Result<()> {
                 let card = reader.select(None)?;
                 eprintln!("卡型：{}", pn532::classify(&card));
                 println!("{}", serde_json::to_string_pretty(&card)?);
+            } else if op == "identify" {
+                let card = reader.select(None)?;
+                eprintln!("卡型：{}", pn532::classify(&card));
+                // Read-only Gen1a magic-backdoor probe: no write, UID unchanged.
+                let gen1a = reader.gen1a_probe()?;
+                eprintln!(
+                    "Gen1a 魔术后门：{}",
+                    if gen1a {
+                        "是（响应 40/43 后门，可能支持直接写 0 块 UID）"
+                    } else {
+                        "否（未响应后门，普通卡或非 Gen1a 魔术卡）"
+                    }
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "card": card,
+                        "gen1a_backdoor": gen1a,
+                    }))?
+                );
             } else {
                 let output = args.get(3).context("请指定输出文件")?;
                 let keys = document::parse_keys(
@@ -79,7 +100,7 @@ fn main() -> Result<()> {
             }
         }
         _ => println!(
-            "PCR532 Studio Rust · scan/read/diagnose/nested/fudan-read/fudan-recover/verify"
+            "PCR532 Studio Rust · scan/identify/read/diagnose/nested/fudan-read/fudan-recover/verify"
         ),
     }
     Ok(())
